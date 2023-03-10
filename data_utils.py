@@ -6,7 +6,7 @@ import math
 import random
 
 
-class VALLEDataset(Dataset):
+class VallEDataset(Dataset):
     def __init__(self, paths, sr, prompt_s_len):
         self.paths = paths
         self.txt_ext = '.phn.txt'
@@ -93,11 +93,8 @@ def collate_fn(batch):
     Returns:
         padded batches and lengths for each batches
         text_batch: (b t), prompt text tokens
-        text_len:   (b), prompt text lengths
-        prom_batch: (b t' l), prompt acoustic tokens
-        prom_len:   (b), prompt acoustic lengths
-        code_batch: (b t" l), gt acoustic tokens
-        code_len:   (b), gt acoustic lengths
+        prom_batch: (b t' L), prompt acoustic tokens
+        code_batch: (b t" L), gt acoustic tokens
     """
     text_max_len, prom_max_len, code_max_len = torch.max(torch.stack([tensor([X.shape[0] for X in Xs]) for Xs in batch]), dim=0)[0]
     batch_size = len(batch)
@@ -106,13 +103,7 @@ def collate_fn(batch):
     text_batch = torch.full((batch_size, text_max_len), -1)
     prom_batch = torch.full((batch_size, prom_max_len, codec_level), -1)
     code_batch = torch.full((batch_size, code_max_len, codec_level), -1)
-    # text_len = torch.empty(batch_size)
-    # prom_len = torch.empty(batch_size)
-    # code_len = torch.empty(batch_size)
     for i, (text, prom, code) in enumerate(batch):
-        # tl = text_len[i] = text.shape[0]
-        # pl = prom_len[i] = prom.shape[0]
-        # cl = code_len[i] = code.shape[0]
         text_batch[i,:text.shape[0]] = text
         prom_batch[i,:prom.shape[0],:] = prom
         code_batch[i,:code.shape[0],:] = code

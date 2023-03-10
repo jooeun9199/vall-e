@@ -11,8 +11,8 @@ from torch.utils.data import DataLoader
 import deepspeed
 
 import utils
-from data_utils import VALLEDataset, collate_fn
-from model import AR
+from data_utils import VallEDataset, collate_fn
+from model import VallE
 from vall_e.emb.qnt import decode
 
 # config_dir = './configs/AR.json'
@@ -22,7 +22,7 @@ ckpt_dir = './ckpts/AR/'
 ckpt_num = '*' # for latest: type '*'
 global_step = 0
 total_steps = 800000
-devices = [4,5,6,7]
+devices = [1,2,3,4,5,6,7]
 num_vocab = 1024
 sr = 24000
 prompt_s_len = 3
@@ -30,7 +30,7 @@ lr = 1e-5
 warmup_num_steps = 32000
 split_ratio = 0.95
 num_workers = 4
-batch_size = 2
+batch_size = 1
 log_interval = 20
 
 
@@ -51,7 +51,7 @@ def train_and_eval(rank, n_gpus):
     dist.init_process_group(backend='nccl', init_method='env://', world_size=n_gpus, rank=rank)
 
     # Model
-    model = AR(num_vocab).to(device)
+    model = VallE(num_vocab).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     scheduler = deepspeed.runtime.lr_schedules.WarmupDecayLR(optimizer, total_num_steps=total_steps, warmup_num_steps= warmup_num_steps)
     
@@ -67,13 +67,13 @@ def train_and_eval(rank, n_gpus):
     train_paths = paths[:N]
     val_paths = paths[N:]
 
-    train_dataset = VALLEDataset(train_paths, sr, prompt_s_len)
+    train_dataset = VallEDataset(train_paths, sr, prompt_s_len)
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset, num_replicas=n_gpus, rank=rank, shuffle=True)
     train_loader = DataLoader(train_dataset, num_workers=num_workers, collate_fn=collate_fn, batch_size=batch_size, drop_last=True, sampler=train_sampler)
     total_epochs = math.ceil(total_steps / len(train_loader))
 
     if rank == 0:
-        val_dataset = VALLEDataset(val_paths, sr, prompt_s_len)
+        val_dataset = VallEDataset(val_paths, sr, prompt_s_len)
         val_loader = DataLoader(val_dataset, num_workers=num_workers, collate_fn=collate_fn, batch_size=batch_size)
 
     # Load
@@ -83,7 +83,6 @@ def train_and_eval(rank, n_gpus):
         else:
             epoch = utils.load_checkpoint(os.path.join(ckpt_dir, "G_"+ckpt_num+".pth"), model, optimizer)
         optimizer.step_num = epoch * len(train_loader)
-        optimizer._update_learning_rate()
         global_step = epoch * len(train_loader)
         epoch_str = epoch + 1
 
@@ -101,7 +100,6 @@ def train_and_eval(rank, n_gpus):
     end = False
     # Train
     for epoch in range(epoch_str, total_epochs + 1):
-
         train_loader.sampler.set_epoch(epoch)
         
         model.train()
@@ -110,7 +108,9 @@ def train_and_eval(rank, n_gpus):
             text_batch, prom_batch, code_batch =  map(lambda t: t.to(device), [text_batch, prom_batch, code_batch])
             
             optimizer.zero_grad()
-            out, loss = model(text_batch, prom_batch, code_batch, infer=False)
+            losses = model(text_batch, prom_batch, code_batch, infer=False)
+
+            loss = sum(losses)
 
             loss.backward()
 
@@ -128,7 +128,7 @@ def train_and_eval(rank, n_gpus):
                         batch_idx * batch_size,
                         len(train_loader.dataset),
                         100. * batch_idx / len(train_loader)))
-                    logger.info('Loss: {:.6f}'.format(loss))
+                    logger.info('Total Loss: {:.6f}, AR: {:.6f}, NAR: {:.6f}, '.format(loss, losses[0], losses[1]))
 
             global_step += 1
     
@@ -145,8 +145,10 @@ def train_and_eval(rank, n_gpus):
                 for batch_idx, (text_batch, prom_batch, code_batch) in enumerate(val_loader):
                     text_batch, prom_batch, code_batch =  map(lambda t: t.to(device), [text_batch, prom_batch, code_batch])
 
-                    out, loss = model(text_batch, prom_batch, code_batch, infer=False)
+                    losses = model(text_batch, prom_batch, code_batch, infer=False)
                     
+                    loss = sum(losses)
+
                     loss_sum += loss
             
             loss = loss_sum / len(val_loader)
