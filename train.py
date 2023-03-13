@@ -19,9 +19,9 @@ from model import VallE
 
 # config_dir = './configs/base.json'
 data_dir = './data/LibriTTS/'
-log_dir = './logs/test/'
-ckpt_dir = './ckpts/test/'
-out_dir = './outs/test/'
+log_dir = './logs/base/'
+ckpt_dir = './ckpts/base/'
+out_dir = './outs/base/'
 ckpt_num = '*' # for latest: type '*'
 global_step = 0
 total_steps = 800000
@@ -135,8 +135,6 @@ def train_and_eval(rank, n_gpus):
                         loss, losses[0], losses[1]))
 
             global_step += 1
-            break
-    
 
         if rank == 0:
             
@@ -165,17 +163,14 @@ def train_and_eval(rank, n_gpus):
                                 batch_idx * batch_size,
                                 len(val_loader.dataset),
                                 100. * batch_idx / len(val_loader),
-                                loss, losses[0], losses[1]))
-                    
-                    break
-
+                                loss, losses[0], losses[1]))                    
             
-            loss = loss_sum / len(val_loader)
-            logger.info('Average Loss for {} Eval data: {:.6f}'.format(len(val_loader), loss))
+            loss = loss_sum / len(val_loader.dataset)
+            logger.info('Average Loss for {} Eval data: {:.6f}'.format(len(val_loader.dataset), loss))
 
             # Infer
             with torch.no_grad():
-                code = model(text_batch[0], prom_batch[0], infer=True)
+                code = model(text_batch[0], prom_batch[0], infer=True, sampling_temperature=0.2)
                 code = code.T.unsqueeze(0)
 
                 decode_model = EncodecModel.encodec_model_24khz()

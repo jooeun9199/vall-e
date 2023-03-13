@@ -188,7 +188,7 @@ class AR(nn.Module):
             # update mask
             mask[:-1,-1] = 0
 
-            for _ in range(max_ar_step):
+            for i in range(max_ar_step):
 
                 # transformer
                 h = self.transformer(x, mask) # (t+t'+3+@ d)
@@ -198,6 +198,10 @@ class AR(nn.Module):
 
                 # generate next token
                 y = torch.distributions.Categorical(logits=h / sampling_temperature).sample()[None] # (1)
+
+                if y.item() == self.start_ind:
+                    i -= 1
+                    continue
 
                 # update
                 out = torch.cat((out, y)) # (t+t'+3)
@@ -280,6 +284,10 @@ class NAR(nn.Module):
 
                 # generate next token
                 y = torch.distributions.Categorical(logits=h / sampling_temperature).sample() # (t")
+
+                if self.start_ind in y or self.end_ind in y:
+                    i -= 1
+                    continue
 
                 # update
                 out = torch.cat((out, y[:,None]), dim=1) # (t" 1+@)
