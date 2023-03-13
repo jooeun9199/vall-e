@@ -2,6 +2,8 @@ import os
 import math
 import random
 import soundfile
+from einops import rearrange
+from encodec import EncodecModel
 
 import torch
 import torch.distributed as dist
@@ -13,16 +15,17 @@ import deepspeed
 import utils
 from data_utils import VallEDataset, collate_fn
 from model import VallE
-from vall_e.emb.qnt import decode
 
-# config_dir = './configs/AR.json'
+
+# config_dir = './configs/base.json'
 data_dir = './data/LibriTTS/'
-log_dir = './logs/AR/'
-ckpt_dir = './ckpts/AR/'
+log_dir = './logs/test/'
+ckpt_dir = './ckpts/test/'
+out_dir = './outs/test/'
 ckpt_num = '*' # for latest: type '*'
 global_step = 0
 total_steps = 800000
-devices = [1,2,3,4,5,6,7]
+devices = [2,3,4,5,6]
 num_vocab = 1024
 sr = 24000
 prompt_s_len = 3
@@ -38,7 +41,7 @@ def main():
 
     n_gpus = len(devices)
     os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12345'
+    os.environ['MASTER_PORT'] = '13451'
 
     mp.spawn(train_and_eval, nprocs=n_gpus, args=(n_gpus,))
 
@@ -91,13 +94,14 @@ def train_and_eval(rank, n_gpus):
         global_step = 0
         if not os.path.exists(ckpt_dir):
             os.makedirs(ckpt_dir)
+        if not os.path.exists(out_dir):
+            os.makedirs(out_dir)
 
 
     # Logger
     if rank == 0:
         logger = utils.get_logger(log_dir)
 
-    end = False
     # Train
     for epoch in range(epoch_str, total_epochs + 1):
         train_loader.sampler.set_epoch(epoch)
@@ -122,15 +126,16 @@ def train_and_eval(rank, n_gpus):
 
                 if batch_idx % log_interval == 0:
 
-                    logger.info('Train Epoch: {}, Global Step: {} [{}/{} ({:.0f}%)]\t'.format(
+                    logger.info('Train Epoch: {}, Global Step: {} [{}/{} ({:.0f}%)]   \tTotal Loss: {:.6f}, AR: {:.6f}, NAR: {:.6f}'.format(
                         epoch,
                         global_step,
                         batch_idx * batch_size,
                         len(train_loader.dataset),
-                        100. * batch_idx / len(train_loader)))
-                    logger.info('Total Loss: {:.6f}, AR: {:.6f}, NAR: {:.6f}, '.format(loss, losses[0], losses[1]))
+                        100. * batch_idx / len(train_loader),
+                        loss, losses[0], losses[1]))
 
             global_step += 1
+            break
     
 
         if rank == 0:
@@ -150,18 +155,34 @@ def train_and_eval(rank, n_gpus):
                     loss = sum(losses)
 
                     loss_sum += loss
+
+                            
+                    if rank == 0:
+
+                        if batch_idx % log_interval == 0:
+
+                            logger.info('Eval: [{}/{} ({:.0f}%)]   \tTotal Loss: {:.6f}, AR: {:.6f}, NAR: {:.6f}'.format(
+                                batch_idx * batch_size,
+                                len(val_loader.dataset),
+                                100. * batch_idx / len(val_loader),
+                                loss, losses[0], losses[1]))
+                    
+                    break
+
             
             loss = loss_sum / len(val_loader)
             logger.info('Average Loss for {} Eval data: {:.6f}'.format(len(val_loader), loss))
 
-                    # Infer
-                    # out = model(text_batch, prom_batch, code_batch, infer=True)
-                    # codes = out[:,None,:]
-                    # wavs, _ = decode(codes)
-                    # gts, _ = decode(code_list)
-                    # for i in range(batch_size):
-                    #     soundfile.write("{}{}/{}.recon.wav".format(log_dir, epoch, batch_size*batch_idx+i), wavs.cpu()[i, 0], sr)
-                    #     soundfile.write("{}{}/{}.gt.wav".format(log_dir, epoch, batch_size*batch_idx+i), gts.cpu()[i, 0], sr)
+            # Infer
+            with torch.no_grad():
+                code = model(text_batch[0], prom_batch[0], infer=True)
+                code = code.T.unsqueeze(0)
+
+                decode_model = EncodecModel.encodec_model_24khz()
+                decode_model.set_target_bandwidth(6.0)
+                wave = decode_model.decode([(code.cpu(), None)])
+                            
+            soundfile.write("{}/{}.wav".format(out_dir, epoch), wave[0, 0], sr)
 
             # Save
             utils.save_checkpoint(model, optimizer, lr, epoch, os.path.join(ckpt_dir, "G_{}.pth".format(epoch)))
