@@ -86,26 +86,15 @@ class VallEDataset(Dataset):
 
 
 
-def collate_fn(batch):
+def collate_fn(data_list):
     """
     Args:
-        batch: [(text, prom, code) * b]
+        data_list: [(text, prom, code) * b]
     Returns:
-        padded batches and lengths for each batches
-        text_batch: (b t), prompt text tokens
-        prom_batch: (b t' L), prompt acoustic tokens
-        code_batch: (b t" L), gt acoustic tokens
+        text_list: [(t) * b], prompt text tokens
+        prom_list: [(t' L) * b], prompt acoustic tokens
+        code_list: [(t" L) * b], gt acoustic tokens
     """
-    text_max_len, prom_max_len, code_max_len = torch.max(torch.stack([tensor([X.shape[0] for X in Xs]) for Xs in batch]), dim=0)[0]
-    batch_size = len(batch)
-    codec_level = batch[0][1].shape[-1]
-
-    text_batch = torch.full((batch_size, text_max_len), -1)
-    prom_batch = torch.full((batch_size, prom_max_len, codec_level), -1)
-    code_batch = torch.full((batch_size, code_max_len, codec_level), -1)
-    for i, (text, prom, code) in enumerate(batch):
-        text_batch[i,:text.shape[0]] = text
-        prom_batch[i,:prom.shape[0],:] = prom
-        code_batch[i,:code.shape[0],:] = code
+    text_list, prom_list, code_list = [[x[j] for x in data_list] for j in range(len(data_list[0]))]
     
-    return text_batch, prom_batch, code_batch
+    return text_list, prom_list, code_list

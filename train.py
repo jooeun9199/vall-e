@@ -25,7 +25,7 @@ out_dir = './outs/base/'
 ckpt_num = '*' # for latest: type '*'
 global_step = 0
 total_steps = 800000
-devices = [2,3,4,5,6]
+devices = [2,3,4,5]
 num_vocab = 1024
 sr = 24000
 prompt_s_len = 3
@@ -108,11 +108,10 @@ def train_and_eval(rank, n_gpus):
         
         model.train()
 
-        for batch_idx, (text_batch, prom_batch, code_batch) in enumerate(train_loader):
-            text_batch, prom_batch, code_batch =  map(lambda t: t.to(device), [text_batch, prom_batch, code_batch])
-            
+        for batch_idx, (text_list, prom_list, code_list) in enumerate(train_loader):
+
             optimizer.zero_grad()
-            losses = model(text_batch, prom_batch, code_batch, infer=False)
+            losses = model(text_list, prom_list, code_list, infer=False)
 
             loss = sum(losses)
 
@@ -145,10 +144,11 @@ def train_and_eval(rank, n_gpus):
 
             loss_sum = 0
             with torch.no_grad():
-                for batch_idx, (text_batch, prom_batch, code_batch) in enumerate(val_loader):
-                    text_batch, prom_batch, code_batch =  map(lambda t: t.to(device), [text_batch, prom_batch, code_batch])
+                for batch_idx, (text_list, prom_list, code_list) in enumerate(val_loader):
+                    
+                    [(a.to(device), b.to(device), c.to(device)) for a,b,c in zip(text_list,prom_list,code_list)]
 
-                    losses = model(text_batch, prom_batch, code_batch, infer=False)
+                    losses = model(text_list, prom_list, code_list, infer=False)
                     
                     loss = sum(losses)
 
@@ -163,15 +163,16 @@ def train_and_eval(rank, n_gpus):
                                 batch_idx * batch_size,
                                 len(val_loader.dataset),
                                 100. * batch_idx / len(val_loader),
-                                loss, losses[0], losses[1]))                    
+                                loss, losses[0], losses[1]))    
+                    
             
             loss = loss_sum / len(val_loader.dataset)
             logger.info('Average Loss for {} Eval data: {:.6f}'.format(len(val_loader.dataset), loss))
 
             # Infer
             with torch.no_grad():
-                code = model(text_batch[0], prom_batch[0], infer=True, sampling_temperature=0.2)
-                code = code.T.unsqueeze(0)
+                code = model([text_list[-1]], [prom_list[-1]], infer=True, sampling_temperature=0.2) # [(t L) * 1]
+                code = code[0].T.unsqueeze(0)
 
                 decode_model = EncodecModel.encodec_model_24khz()
                 decode_model.set_target_bandwidth(6.0)
