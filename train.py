@@ -18,10 +18,11 @@ from model import VallE
 
 
 # config_dir = './configs/base.json'
+name = 'trial1'
 data_dir = './data/LibriTTS/'
-log_dir = './logs/base/'
-ckpt_dir = './ckpts/base/'
-out_dir = './outs/base/'
+log_dir = './logs/' + name
+ckpt_dir = './ckpts/' + name
+out_dir = './outs/' + name
 ckpt_num = '*' # for latest: type '*'
 global_step = 0
 total_steps = 800000
@@ -41,7 +42,7 @@ def main():
 
     n_gpus = len(devices)
     os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '13451'
+    os.environ['MASTER_PORT'] = '12314'
 
     mp.spawn(train_and_eval, nprocs=n_gpus, args=(n_gpus,))
 

@@ -53,10 +53,10 @@ class Transformer(nn.Module):
         else:
             b, t, t = m.shape
             m = m.repeat(1,self.n_heads,1).reshape(b*self.n_heads,t,t)
-
+    
         gc.collect()
         torch.cuda.empty_cache()
-    
+
         for _ in range(self.n_layers):
             x = self.norm1(x + self.dropout(self.attn(x, x, x, need_weights=False, attn_mask=m)[0]))
             x = self.norm2(x + self.ffn(x))
@@ -118,7 +118,7 @@ class Emb(nn.Module):
             
         l = torch.tensor(list(map(len, x))) # (b)
         x = rearrange(pad_sequence(x), "t b d -> b t d")
-        x = x + self.pos_emb[:x.shape[0],None]
+        x = x + self.pos_emb[None,:x.shape[1]]
 
         return x, l
 
@@ -335,6 +335,7 @@ class VallE(nn.Module):
 
             x, l = self.emb(text, prom, code, 0)
             
+            # import pdb; pdb.set_trace()
             l_AR = self.AR(x, l, sampling_temperature, text, code)
 
             # random level (1~6) for NAR
