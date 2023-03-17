@@ -90,17 +90,30 @@ class Emb(nn.Module):
             level: level to be optimized in NAR, only for train mode (1~7)
         Returns:
             x: (b T d)
-                text <sep> prom0 <sep>          if code is None
-                text <sep> promN <sep> code0    if code has single level (given)
-                text <sep> promi <sep> codei    if level is not None
+                text <sep> prom0 <sep> code0    AR train  if level==0 
+                text <sep> promN <sep> codei    NAR train if level==i 
+                text <sep> prom0 <sep>          AR infer  if code is None 
+                text <sep> promN <sep> code0    NAR infer if code has single level 
             m: (b T 1), mask for padded x
 
         """
         device = self.text_emb.weight.device
         text = self.text_emb(torch.cat(text).to(device)).split([*map(len, text)])
 
+        # AR train
+        if level==0:
+            prom = self.wave_emb[0](torch.cat(prom)[...,0].to(device)).split([*map(len, prom)])
+            code = self.wave_emb[0](torch.cat(code)[...,0].to(device)).split([*map(len, code)])
+            x = [torch.cat((text, self.sep, prom, self.sep, code)) for text, prom, code in zip(text, prom, code)]
+        
+        # NAR train
+        elif level is not None:
+            prom = sum([self.wave_emb[i](torch.cat(prom)[...,i].to(device)) for i in range(self.n_codec)]).split([*map(len, prom)])
+            code = sum([self.wave_emb[i](torch.cat(code)[...,i].to(device)) for i in range(level+1)]).split([*map(len, code)])
+            x = [torch.cat((text, self.sep, prom, self.sep, code)) for text, prom, code in zip(text, prom, code)]
+
         # AR infer
-        if code is None:
+        elif code is None:
             prom = self.wave_emb[0](torch.cat(prom)[...,0].to(device)).split([*map(len, prom)])
             x = [torch.cat((text, self.sep, prom, self.sep)) for text, prom in zip(text, prom)]
         
@@ -110,11 +123,8 @@ class Emb(nn.Module):
             code = self.wave_emb[0](torch.cat(code)[...,0].to(device)).split([*map(len, code)])
             x = [torch.cat((text, self.sep, prom, self.sep, code)) for text, prom, code in zip(text, prom, code)]
         
-        # AR(level=0) or NAR(level=i) train
-        elif level is not None:
-            prom = sum([self.wave_emb[i](torch.cat(prom)[...,i].to(device)) for i in range(level+1)]).split([*map(len, prom)])
-            code = sum([self.wave_emb[i](torch.cat(code)[...,i].to(device)) for i in range(level+1)]).split([*map(len, code)])
-            x = [torch.cat((text, self.sep, prom, self.sep, code)) for text, prom, code in zip(text, prom, code)]
+        else:
+            raise ValueError
             
         l = torch.tensor(list(map(len, x))) # (b)
         x = rearrange(pad_sequence(x), "t b d -> b t d")
@@ -162,7 +172,7 @@ class AR(nn.Module):
             h_code = torch.cat([x[l[i]-len(code[i])-1:l[i]] @ self.wave_emb.weight.t() for i, x in enumerate(x)]) # (T' N+1)
 
             # loss
-            y_text = torch.cat([torch.roll(text,-1)[:-1].to(x.device) for text in text])
+            y_text = torch.cat([text[1:].to(x.device) for text in text])
             y_code = torch.cat([torch.cat((code[:,0], torch.tensor([self.eos_ind]))).to(x.device) for code in code])
 
             loss = F.cross_entropy(h_text, y_text) + F.cross_entropy(h_code, y_code)
