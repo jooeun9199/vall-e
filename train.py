@@ -18,7 +18,7 @@ from model import VallE
 
 
 # config_dir = './configs/base.json'
-name = 'trial1'
+name = 'trial3'
 data_dir = './data/LibriTTS/'
 log_dir = './logs/' + name
 ckpt_dir = './ckpts/' + name
@@ -114,9 +114,10 @@ def train_and_eval(rank, n_gpus):
             optimizer.zero_grad()
             losses = model(text_list, prom_list, code_list, infer=False)
 
-            loss = sum(losses)
+            for loss in losses:
+                loss.backward()
 
-            loss.backward()
+            loss = sum(losses)
 
             optimizer.step()
 

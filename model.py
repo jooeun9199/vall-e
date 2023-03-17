@@ -90,10 +90,10 @@ class Emb(nn.Module):
             level: level to be optimized in NAR, only for train mode (1~7)
         Returns:
             x: (b T d)
-                text <sep> prom0 <sep> code0    AR train  if level==0 
-                text <sep> promN <sep> codei    NAR train if level==i 
-                text <sep> prom0 <sep>          AR infer  if code is None 
-                text <sep> promN <sep> code0    NAR infer if code has single level 
+                text <sep> prom0 <sep> code0    AR train  if level==0
+                text <sep> promN <sep> codei    NAR train if level==i
+                text <sep> prom0 <sep>          AR infer  if code is None
+                text <sep> promN <sep> code0    NAR infer if code has single level
             m: (b T 1), mask for padded x
 
         """
@@ -175,7 +175,7 @@ class AR(nn.Module):
             y_text = torch.cat([text[1:].to(x.device) for text in text])
             y_code = torch.cat([torch.cat((code[:,0], torch.tensor([self.eos_ind]))).to(x.device) for code in code])
 
-            loss = F.cross_entropy(h_text, y_text) + F.cross_entropy(h_code, y_code)
+            loss = (F.cross_entropy(h_text, y_text) * len(y_text) + F.cross_entropy(h_code, y_code) * len(y_code)) / (len(y_text)+len(y_code))
 
             return loss
 
@@ -345,7 +345,6 @@ class VallE(nn.Module):
 
             x, l = self.emb(text, prom, code, 0)
             
-            # import pdb; pdb.set_trace()
             l_AR = self.AR(x, l, sampling_temperature, text, code)
 
             # random level (1~6) for NAR
