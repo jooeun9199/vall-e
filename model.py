@@ -141,8 +141,8 @@ class AR(nn.Module):
         self.sep_emb = sep_emb
         self.text_emb = text_emb
         self.wave_emb = wave_emb
-        self.text_classifier = nn.Parameter(torch.tensor(self.text_emb.weight.t()))
-        self.wave_classifier = nn.Parameter(torch.tensor(self.wave_emb.weight.t()))
+        self.text_classifier = nn.Parameter(self.text_emb.weight.t().clone().detach().requires_grad_(True))
+        self.wave_classifier = nn.Parameter(self.wave_emb.weight.t().clone().detach().requires_grad_(True))
 
     def forward(self, x, l, sampling_temperature, text=None, code=None, max_ar_step=None) -> Tensor:
         """
@@ -223,7 +223,7 @@ class NAR(nn.Module):
         self.end_ind = end_ind
         self.ignore_ind = ignore_ind
         self.wave_emb = wave_emb
-        self.classifier = nn.Parameter(torch.tensor([self.wave_emb[level].weight.t() for level in n_codec]))
+        self.classifier = nn.Parameter(torch.stack([self.wave_emb[level].weight.t().clone().detach().requires_grad_(True) for level in range(1,n_codec)]))
 
     def forward(self, x, l, sampling_temperature, code=None, level=None) -> Tensor:
         """
@@ -249,7 +249,7 @@ class NAR(nn.Module):
             x = self.transformer(x, m) # (b T d)
 
             # classifier
-            h = torch.cat([x[l[i]-len(code[i]):l[i]] @ self.classifier.weight[level] for i, x in enumerate(x)]) # (b T n_vocab)
+            h = torch.cat([x[l[i]-len(code[i]):l[i]] @ self.classifier[level-1] for i, x in enumerate(x)]) # (b T n_vocab)
 
             # loss
             y = torch.cat([code[:,level].to(x.device) for code in code])
@@ -268,7 +268,7 @@ class NAR(nn.Module):
                 h = self.transformer(x, m) # (b T d)
 
                 # classifier
-                h = h[:,-code.shape[1]:] @ self.classifier.weight[i] # (b t n_vocab)
+                h = h[:,-code.shape[1]:] @ self.classifier[i-1] # (b t n_vocab)
 
                 # generate next token
                 y = torch.distributions.Categorical(logits=h / sampling_temperature).sample().to(x.device) # (b t)
