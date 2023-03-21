@@ -23,13 +23,11 @@ import gc
         
 #         return s * h + b
 
-
-class Transformer(nn.Module):
-    def __init__(self, d_model, n_heads, n_layers, p_dropout):
+class AttentionLayer(nn.Module):
+    def __init__(self, d_model, n_heads, p_dropout):
         super().__init__()
 
         self.n_heads = n_heads
-        self.n_layers = n_layers
 
         self.attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
         self.dropout = nn.Dropout(p_dropout)
@@ -45,6 +43,21 @@ class Transformer(nn.Module):
         self.norm2 = nn.LayerNorm(d_model)
 
     def forward(self, x, m):
+
+        x = self.norm1(x + self.dropout(self.attn(x, x, x, need_weights=False, attn_mask=m)[0]))
+        x = self.norm2(x + self.ffn(x))
+        
+        return x
+
+
+class Transformer(nn.Module):
+    def __init__(self, d_model, n_heads, n_layers, p_dropout):
+        super().__init__()
+
+        self.n_heads = n_heads
+        self.attn = nn.ModuleList([AttentionLayer(d_model, n_heads, p_dropout) for _ in range(n_layers)])
+
+    def forward(self, x, m):
     
         # single batch
         if x.shape[0] == 1:
@@ -53,13 +66,12 @@ class Transformer(nn.Module):
         else:
             b, t, t = m.shape
             m = m.repeat(1,self.n_heads,1).reshape(b*self.n_heads,t,t)
-    
-        gc.collect()
-        torch.cuda.empty_cache()
 
-        for _ in range(self.n_layers):
-            x = self.norm1(x + self.dropout(self.attn(x, x, x, need_weights=False, attn_mask=m)[0]))
-            x = self.norm2(x + self.ffn(x))
+        # gc.collect()
+        # torch.cuda.empty_cache()
+        
+        for layer in self.attn:
+            x = layer(x, m)
 
         if len(x.shape)==2:
             x = x.unsqueeze(0)
@@ -134,15 +146,13 @@ class Emb(nn.Module):
 
 
 class AR(nn.Module):
-    def __init__(self, d_model, n_heads, n_layers, p_dropout, eos_ind, sep_emb, text_emb, wave_emb):
+    def __init__(self, n_vocab, d_model, n_heads, n_layers, p_dropout, eos_ind, wave_emb):
         super().__init__()
-        self.transformer = Transformer(d_model, n_heads, n_layers, p_dropout)
         self.eos_ind = eos_ind
-        self.sep_emb = sep_emb
-        self.text_emb = text_emb
         self.wave_emb = wave_emb
-        self.text_classifier = nn.Parameter(self.text_emb.weight.t().clone().detach().requires_grad_(True))
-        self.wave_classifier = nn.Parameter(self.wave_emb.weight.t().clone().detach().requires_grad_(True))
+        self.transformer = Transformer(d_model, n_heads, n_layers, p_dropout)
+        self.text_classifier = nn.Linear(d_model, n_vocab)
+        self.wave_classifier = nn.Linear(d_model, n_vocab+1)
 
     def forward(self, x, l, sampling_temperature, text=None, code=None, max_ar_step=None) -> Tensor:
         """
@@ -170,8 +180,8 @@ class AR(nn.Module):
             x = self.transformer(x, m) # (b T d)
 
             # classifier
-            h_text = torch.cat([x[:len(text[i])-1] @ self.text_classifier for i, x in enumerate(x)]) # (T N)
-            h_code = torch.cat([x[l[i]-len(code[i])-1:l[i]] @ self.wave_classifier for i, x in enumerate(x)]) # (T' N+1)
+            h_text = torch.cat([self.text_classifier(x[:len(text[i])-1]) for i, x in enumerate(x)]) # (T N)
+            h_code = torch.cat([self.wave_classifier(x[l[i]-len(code[i])-1:l[i]]) for i, x in enumerate(x)]) # (T' N+1)
 
             # loss
             y_text = torch.cat([text[1:].to(x.device) for text in text])
@@ -192,7 +202,7 @@ class AR(nn.Module):
                 h = self.transformer(x, m) # (1 T d)
 
                 # classifier
-                h = h[:,-1] @ self.wave_classifier # (1 1 n_vocab)
+                h = self.wave_classifier(h[:,-1]) # (1 1 n_vocab)
 
                 # generate next token
                 y = torch.distributions.Categorical(logits=h / sampling_temperature).sample()
@@ -213,17 +223,13 @@ class AR(nn.Module):
             raise ValueError
 
 
-
 class NAR(nn.Module):
-    def __init__(self, n_codec, d_model, n_heads, n_layers, p_dropout, start_ind, end_ind, ignore_ind, wave_emb):
+    def __init__(self, n_vocab, n_codec, d_model, n_heads, n_layers, p_dropout, wave_emb):
         super().__init__()
         self.n_codec = n_codec
-        self.transformer = Transformer(d_model, n_heads, n_layers, p_dropout)
-        self.start_ind = start_ind
-        self.end_ind = end_ind
-        self.ignore_ind = ignore_ind
         self.wave_emb = wave_emb
-        self.classifier = nn.Parameter(torch.stack([self.wave_emb[level].weight.t().clone().detach().requires_grad_(True) for level in range(1,n_codec)]))
+        self.transformer = Transformer(d_model, n_heads, n_layers, p_dropout)
+        self.classifiers = nn.ModuleList([nn.Linear(d_model, n_vocab) for level in range(1,n_codec)])
 
     def forward(self, x, l, sampling_temperature, code=None, level=None) -> Tensor:
         """
@@ -249,7 +255,7 @@ class NAR(nn.Module):
             x = self.transformer(x, m) # (b T d)
 
             # classifier
-            h = torch.cat([x[l[i]-len(code[i]):l[i]] @ self.classifier[level-1] for i, x in enumerate(x)]) # (b T n_vocab)
+            h = torch.cat([self.classifiers[level-1](x[l[i]-len(code[i]):l[i]]) for i, x in enumerate(x)]) # (b T n_vocab)
 
             # loss
             y = torch.cat([code[:,level].to(x.device) for code in code])
@@ -268,7 +274,7 @@ class NAR(nn.Module):
                 h = self.transformer(x, m) # (b T d)
 
                 # classifier
-                h = h[:,-code.shape[1]:] @ self.classifier[i-1] # (b t n_vocab)
+                h = self.classifiers[i-1](h[:,-code.shape[1]:]) # (b t n_vocab)
 
                 # generate next token
                 y = torch.distributions.Categorical(logits=h / sampling_temperature).sample().to(x.device) # (b t)
@@ -304,15 +310,14 @@ class VallE(nn.Module):
         """
         super().__init__()
         eos_ind = d_model
-        ignore_ind = -1
         sep_emb = nn.Parameter(torch.randn(d_model).unsqueeze(0))
         text_emb = nn.Embedding(n_vocab, d_model)
-        wave_emb = nn.ModuleList([nn.Embedding(n_vocab + 1, d_model)] + [nn.Embedding(n_vocab, d_model) for _ in range(n_codec)]) # <EOS> token
+        wave_emb = nn.ModuleList([nn.Embedding(n_vocab + 1, d_model)] + [nn.Embedding(n_vocab, d_model) for _ in range(1, n_codec)]) # <EOS> token
         self.n_codec = n_codec
-
+        
         self.emb = Emb(n_codec, d_model, sep_emb, text_emb, wave_emb)
-        self.AR = AR(d_model, n_heads, n_layers, p_dropout, eos_ind, sep_emb, text_emb, wave_emb[0])
-        self.NAR = NAR(n_codec, d_model, n_heads, n_layers, p_dropout, eos_ind, sep_emb, ignore_ind, wave_emb)
+        self.AR = AR(n_vocab, d_model, n_heads, n_layers, p_dropout, eos_ind, wave_emb[0])
+        self.NAR = NAR(n_vocab, n_codec, d_model, n_heads, n_layers, p_dropout, wave_emb)
 
     def forward(self, text, prom, code=None, infer=False, sampling_temperature=1.0, max_ar_step=300) -> Tensor:
         """

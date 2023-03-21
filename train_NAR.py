@@ -13,19 +13,22 @@ import deepspeed
 
 import utils
 from data_utils import VallEDataset, collate_fn
-from model import VallE
+from vall_e.vall_e.ar import AR
+from vall_e.vall_e.nar import NAR
 
 
 # config_dir = './configs/base.json'
-name = 'trial6'
+name = 'NAR'
+name_AR = 'AR'
 data_dir = './data/LibriTTS/'
 log_dir = './logs/' + name
 ckpt_dir = './ckpts/' + name
+ckpt_dir_AR = './ckpts/' + name_AR
 out_dir = './outs/' + name
 ckpt_num = '*' # for latest: type '*'
 global_step = 0
 total_steps = 800000
-devices = [0,1,2,3]
+devices = [2,3]
 num_vocab = 1024
 sr = 24000
 prompt_s_len = 3
@@ -33,7 +36,7 @@ lr = 1e-5
 warmup_num_steps = 32000
 split_ratio = 0.95
 num_workers = 4
-batch_size = 1
+batch_size = 2
 log_interval = 20
 
 
@@ -41,7 +44,7 @@ def main():
 
     n_gpus = len(devices)
     os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '11224'
+    os.environ['MASTER_PORT'] = '12124'
 
     mp.spawn(train_and_eval, nprocs=n_gpus, args=(n_gpus,))
 
@@ -54,18 +57,19 @@ def train_and_eval(rank, n_gpus):
     dist.init_process_group(backend='nccl', init_method='env://', world_size=n_gpus, rank=rank)
 
     # Model
-    model = VallE(num_vocab).to(device)
+    model = NAR(num_vocab).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     scheduler = deepspeed.runtime.lr_schedules.WarmupDecayLR(optimizer, total_num_steps=total_steps, warmup_num_steps= warmup_num_steps)
     
+    model_AR = AR(num_vocab).to(device)
+    optimizer_AR = torch.optim.AdamW(model_AR.parameters(), lr=lr)
+
     # Data
     paths = []
     for filename in os.listdir(data_dir):
         if filename.endswith('.qnt.pt'):
-            if torch.load(data_dir + filename).shape[-1] > 2000:
-                continue
             paths.append(data_dir + filename.split('.')[0])
-
+        
     random.seed(0)
     random.shuffle(paths)
     N = round(len(paths) * split_ratio)
@@ -99,6 +103,7 @@ def train_and_eval(rank, n_gpus):
         if not os.path.exists(out_dir):
             os.makedirs(out_dir)
 
+
     # Logger
     if rank == 0:
         logger = utils.get_logger(log_dir)
@@ -111,13 +116,13 @@ def train_and_eval(rank, n_gpus):
 
         for batch_idx, (text_list, prom_list, code_list) in enumerate(train_loader):
 
+            text_list, prom_list, code_list = map(lambda x_list: [x.to(device) for x in x_list], [text_list, prom_list, code_list])
+
             optimizer.zero_grad()
-            losses = model(text_list, prom_list, code_list, infer=False)
+            _ = model(text_list, prom_list, code_list)
 
-            for loss in losses:
-                loss.backward()
-
-            loss = sum(losses)
+            loss = sum(model.loss.values())
+            loss.backward()
 
             optimizer.step()
 
@@ -127,13 +132,13 @@ def train_and_eval(rank, n_gpus):
 
                 if batch_idx % log_interval == 0:
 
-                    logger.info('Train Epoch: {}, Global Step: {} [{}/{} ({:.0f}%)]   \tTotal Loss: {:.6f}, AR: {:.6f}, NAR: {:.6f}'.format(
+                    logger.info('Train Epoch: {}, Global Step: {} [{}/{} ({:.0f}%)]   \tLoss: {:.6f}'.format(
                         epoch,
                         global_step,
                         batch_idx * batch_size,
                         len(train_loader.dataset),
                         100. * batch_idx / len(train_loader),
-                        loss, losses[0], losses[1]))
+                        loss))
 
             global_step += 1
 
@@ -147,38 +152,43 @@ def train_and_eval(rank, n_gpus):
             loss_sum = 0
             with torch.no_grad():
                 for batch_idx, (text_list, prom_list, code_list) in enumerate(val_loader):
-                    
-                    losses = model(text_list, prom_list, code_list, infer=False)
-                    
-                    loss = sum(losses)
 
+                    text_list, prom_list, code_list = map(lambda x_list: [x.to(device) for x in x_list], [text_list, prom_list, code_list])
+
+                    _ = model(text_list, prom_list, code_list)
+                    
+                    loss = sum(model.loss.values())
                     loss_sum += loss
-
                             
                     if rank == 0:
 
                         if batch_idx % log_interval == 0:
 
-                            logger.info('Eval: [{}/{} ({:.0f}%)]   \tTotal Loss: {:.6f}, AR: {:.6f}, NAR: {:.6f}'.format(
+                            logger.info('Eval: [{}/{} ({:.0f}%)]   \tLoss: {:.6f}'.format(
                                 batch_idx * batch_size,
                                 len(val_loader.dataset),
                                 100. * batch_idx / len(val_loader),
-                                loss, losses[0], losses[1]))    
-                    
-            
+                                loss))
+
             loss = loss_sum / len(val_loader.dataset)
             logger.info('Average Loss for {} Eval data: {:.6f}'.format(len(val_loader.dataset), loss))
 
             # Infer
             with torch.no_grad():
-                code = model([text_list[-1]], [prom_list[-1]], infer=True, sampling_temperature=0.2) # [(t L) * 1]
-                code = code[0].T.unsqueeze(0)
+
+                AR_epoch = utils.load_checkpoint(utils.latest_checkpoint_path(ckpt_dir_AR, "G_*.pth"), model_AR, optimizer_AR)
+
+                code = model_AR([text_list[-1].to(device)], [prom_list[-1].to(device)])[0].unsqueeze(-1) # (t 1)
+
+                for i in range(1, 8):
+                    code = model([text_list[-1].to(device)], [prom_list[-1].to(device)], [code[...,:i].to(device)]) # [(t L) * 1]
+                    code = code[0] # (t L)
 
                 decode_model = EncodecModel.encodec_model_24khz()
                 decode_model.set_target_bandwidth(6.0)
-                wave = decode_model.decode([(code.cpu(), None)])
-                            
-            soundfile.write("{}/{}.wav".format(out_dir, epoch), wave[0, 0], sr)
+                wave = decode_model.decode([(code.t().unsqueeze(0).cpu(), None)])
+
+            soundfile.write("{}/AR{}_NAR{}.wav".format(out_dir, AR_epoch, epoch), wave[0, 0], sr)
 
             # Save
             utils.save_checkpoint(model, optimizer, lr, epoch, os.path.join(ckpt_dir, "G_{}.pth".format(epoch)))
