@@ -24,7 +24,7 @@ ckpt_dir = './ckpts/' + name
 out_dir = './outs/' + name
 ckpt_num = '*' # for latest: type '*'
 global_step = 0
-total_steps = 800000
+total_steps = 80000000
 devices = [0,1]
 num_vocab = 1024
 sr = 24000
@@ -178,7 +178,7 @@ def train_and_eval(rank, n_gpus):
                 decode_model.set_target_bandwidth(6.0)
                 wave = decode_model.decode([(code.cpu(), None)])
 
-            soundfile.write("{}/{}.wav".format(out_dir, epoch), wave[0, 0], sr)
+            soundfile.write("{}/AR{}.wav".format(out_dir, epoch), wave[0, 0], sr)
 
             # Save
             utils.save_checkpoint(model, optimizer, lr, epoch, os.path.join(ckpt_dir, "G_{}.pth".format(epoch)))
